@@ -9,6 +9,8 @@
 #import <Foundation/Foundation.h>
 #import <AudioToolbox/AudioToolbox.h>
 
+#define kNumberRecordBuffers    3
+
 #pragma mark user data struct
 
 //오디오 큐 콜백을 녹음하기 위한 사용자 정보 구조체
@@ -125,9 +127,26 @@ static int MyComputeRecordBufferSize( const AudioStreamBasicDescription *format,
 
 #pragma mark record callback function
 
-static void MyAQInputCallback(void *inUserData, AudioQueueRef inQueue, AudioQueueRef inBuffer,const AudioTimeStamp *inStartTime, UInt32 intNumPackets, const AudioStreamPacketDescription * inPacketDesc)
+static void MyAQInputCallback(void *inUserData, AudioQueueRef inQueue, AudioQueueBufferRef inBuffer,const AudioTimeStamp *inStartTime, UInt32 inNumPackets, const AudioStreamPacketDescription * inPacketDesc)
 {
+    MyRecorder *recorder = (MyRecorder *)inUserData;
     
+    //캡쳐된 패킷을 오디오 파일에 작성
+    if(inNumPackets > 0)
+    {
+        //패킷을 파일에 작성
+        
+        CheckError(AudioFileWritePackets(recorder->recordFile, FALSE, inBuffer->mAudioDataByteSize, inPacketDesc, recorder->recordPacket, &inNumPackets, inBuffer->mAudioData), "AudioFileWritePackets failed");
+        
+        //패킷 인덱스를 증가
+        recorder->recordPacket += inNumPackets;
+        
+    }
+    
+    //사용된 버퍼를 다시 큐에 넣음
+    if(recorder->running) {
+        CheckError(AudioQueueEnqueueBuffer(inQueue, inBuffer, 0, NULL), "AudioQueueEnqueueBuffer failed");
+    }
 }
 
 #pragma mark 주 함수
@@ -175,16 +194,41 @@ int main(int argc, const char * argv[]) {
         MyCopyEncoderCookieToFile(queue, recorder.recordFile);
       
         //필요한 다른 설정
+        //녹음 버퍼 크기를 계산하기 위한 편의 함수 호출
         int bufferByteSize = MyComputeRecordBufferSize(&recordFormat, queue, 0.5);
         
-        
+        //버퍼 할당과 큐에 삽입
+        int bufferIndex;
+        for( bufferIndex = 0; bufferIndex < kNumberRecordBuffers; ++ bufferIndex)
+        {
+            AudioQueueBufferRef buffer;
+            CheckError(AudioQueueAllocateBuffer(queue, bufferByteSize, &buffer), "AudioQueueAllocateBuffer failed");
+            
+            CheckError(AudioQueueEnqueueBuffer(queue, buffer, 0, NULL), "AudioQueueEnqueueBuffer failed");
+        }
         //큐를 시작
+        recorder.running = TRUE;
+        CheckError(AudioQueueStart(queue, NULL), "AudioQueueStart failed");
+        
+        printf("Recording, press <return> to stop:\n");
+        getchar();
         
         
         //큐를 중지
+        printf("* recording done *\n");
+        recorder.running = FALSE;
+        
+        CheckError(AudioQueueStop(queue, TRUE), "AudioQueueStop failed");
         
         
+        //매직 쿠키 편의 함수를 재호출
+        MyCopyEncoderCookieToFile(queue, recorder.recordFile);
         
+        
+        //오디오 큐와 오디오 파일을 해제
+        AudioQueueDispose(queue, TRUE);
+        AudioFileClose(recorder.recordFile);
+
         
     }
     return 0;
